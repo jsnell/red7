@@ -41,6 +41,7 @@
   eliminated
   (hand nil :type card-set)
   (palette nil :type card-set)
+  (score-cache (make-array 16) :type simple-vector)
   (next-player nil :type (or null player)))
 
 (defstruct (game)
@@ -123,7 +124,7 @@
            do (setf (logbitp ,card ,modified-card) nil)
            do ,@body)))
 
-(defun player-score (player type)
+(defun player-score* (player type)
   (declare (optimize speed))
   (labels ((score-for-mask (mask)
              (let ((matching-cards (logand (player-palette player)
@@ -188,6 +189,17 @@
       (#.blue (blue))
       (#.indigo (indigo))
       (#.violet (violet)))))
+
+(defun player-score (player type)
+  (let* ((palette (player-palette player))
+         (cached-key (aref (player-score-cache player) type)))
+    (if (= cached-key palette)
+        (aref (player-score-cache player) (+ type 8))
+        (progn
+          (setf (aref (player-score-cache player) type) palette)
+          (setf (aref (player-score-cache player) (+ type 8))
+                (player-score* player type))))))
+
 
 (defun who-is-winning (game)
   (declare (optimize speed))
