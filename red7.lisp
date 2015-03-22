@@ -34,7 +34,7 @@
   id
   eliminated
   (hand nil :type card-set)
-  (canvas nil :type list)
+  (canvas nil :type card-set)
   (next-player nil :type (or null player)))
 
 (defstruct (game)
@@ -48,7 +48,7 @@
     (format stream ":ID ~A :HAND ~A :CANVAS ~A :NEXT-PLAYER ~A"
             (player-id player)
             (cards-to-list (player-hand player))
-            (mapcar #'card-label (player-canvas player))
+            (cards-to-list (player-canvas player))
             (let ((next (player-next-player player)))
               (if next
                   (player-id next)
@@ -100,71 +100,77 @@
         when (logbitp i card-set)
         collect (card-label i)))
 
+(defun make-card-set (cards)
+  (let ((set 0))
+    (dolist (card cards)
+      (setf set (logior set (ash 1 card))))
+    set))
+
 (defmacro do-cards ((card card-set) &body body)
   `(loop for ,card from 55 downto 0
          when (logbitp ,card ,card-set)
          do ,@body))
 
 (defun player-score (player type)
-  (let ((canvas (sort (copy-list (player-canvas player))
-                      #'> :key #'card-value)))
-    (labels ((score-for-condition (condition)
-               (let ((matching-cards 0)
-                     (best-matching-card 0))
-                 (dolist (card canvas)
-                   (when (funcall condition card)
-                     (incf matching-cards)
-                     (when (zerop best-matching-card)
-                       (setf best-matching-card (card-score card)))))
-                 (+ best-matching-card (* 100 matching-cards)))))
-      (ecase type
-        (#.red
-         (card-score (first canvas)))
-        (#.orange
-         (loop for value from 1 to 7
-               maximize (score-for-condition
-                         (lambda (card)
-                           (eq value (card-value card))))))
-        (#.yellow
-         (loop for color in *colors*
-               maximize (score-for-condition
-                         (lambda (card)
-                           (eq color (card-color card))))))
-        (#.green
-         (score-for-condition (lambda (card)
-                                (evenp (card-value card)))))
-        (#.blue
-         (let ((colors-seen (make-array 7 :initial-element nil))
-               (color-count 0)
-               (best-card nil))
-           (dolist (card canvas)
-             (let ((index (1- (card-color card))))
-               (unless (aref colors-seen index)
-                 (setf (aref colors-seen index) t)
-                 (incf color-count)
-                 (unless best-card
-                   (setf best-card (card-score card))))))
-           (+ (* 100 color-count) best-card)))
-        (#.indigo
-         (let ((prev nil)
-               (current-run-score 0)
-               (best-score 0))
-           (dolist (card canvas)
-             (cond ((not prev)
-                    (setf current-run-score (card-score card))
-                    (setf prev card))
-                   ((= (card-value card) (card-value prev)))
-                   ((= (card-value card) (1- (card-value prev)))
-                    (incf current-run-score 100)
-                    (setf prev card))
-                   (t
-                    (setf current-run-score (card-score card))
-                    (setf prev card)))
-             (setf best-score (max best-score current-run-score)))
-           best-score))
-        (#.violet
-         (score-for-condition (lambda (card)
-                                (< (card-value card) 4))))))))
+  (labels ((score-for-condition (condition)
+             (let ((matching-cards 0)
+                   (best-matching-card 0))
+               (do-cards (card (player-canvas player))
+                 (when (funcall condition card)
+                   (incf matching-cards)
+                   (when (zerop best-matching-card)
+                     (setf best-matching-card (card-score card)))))
+               (+ best-matching-card (* 100 matching-cards)))))
+    (ecase type
+      (#.red
+       (do-cards (card (player-canvas player))
+         ;; Score of first card.
+         (return (card-score card))))
+      (#.orange
+       (loop for value from 1 to 7
+             maximize (score-for-condition
+                       (lambda (card)
+                         (eq value (card-value card))))))
+      (#.yellow
+       (loop for color in *colors*
+             maximize (score-for-condition
+                       (lambda (card)
+                         (eq color (card-color card))))))
+      (#.green
+       (score-for-condition (lambda (card)
+                              (evenp (card-value card)))))
+      (#.blue
+       (let ((colors-seen (make-array 7 :initial-element nil))
+             (color-count 0)
+             (best-card nil))
+         (do-cards (card (player-canvas player))
+           (let ((index (1- (card-color card))))
+             (unless (aref colors-seen index)
+               (setf (aref colors-seen index) t)
+               (incf color-count)
+               (unless best-card
+                 (setf best-card (card-score card))))))
+         (+ (* 100 color-count) best-card)))
+      (#.indigo
+       (let ((prev nil)
+             (current-run-score 0)
+             (best-score 0))
+         (do-cards (card (player-canvas player))
+           (cond ((not prev)
+                  (setf current-run-score (card-score card))
+                  (setf prev card))
+                 ((= (card-value card) (card-value prev)))
+                 ((= (card-value card) (1- (card-value prev)))
+                  (incf current-run-score 100)
+                  (setf prev card))
+                 (t
+                  (setf current-run-score (card-score card))
+                  (setf prev card)))
+           (setf best-score (max best-score current-run-score)))
+         best-score))
+      (#.violet
+       (score-for-condition (lambda (card)
+                              (< (card-value card) 4)))))))
 
 (defun who-is-winning (game)
   (let ((type (if (game-discard game)
@@ -196,13 +202,15 @@
              (check-plays (check-discards)
                (do-cards (play-card (player-hand player))
                  (when play-card
-                   (push play-card (player-canvas player))
+                   (setf (player-canvas player)
+                         (add-card play-card (player-canvas player)))
                    (when (eq player (who-is-winning game))
                      (push (list (cons :play play-card)) valid-moves)))
                  (when check-discards
                    (check-discards play-card))
                  (when play-card
-                   (pop (player-canvas player))))))
+                   (setf (player-canvas player)
+                         (remove-card play-card (player-canvas player)))))))
       (check-plays nil)
       (check-plays t)
       (check-discards nil))
@@ -214,14 +222,15 @@
     (let ((kind (car submove))
           (card (cdr submove)))
       (when (and (eq kind :play) card)
-        (push card (player-canvas player))
+        (setf (player-canvas player)
+              (add-card card (player-canvas player)))
         (setf (player-hand player)
               (remove-card card (player-hand player))))
       (when (and (eq kind :discard) card)
         (push card (game-discard game))
         (setf (player-hand player)
               (remove-card card (player-hand player)))
-        (when (> (card-value card) (length (player-canvas player)))
+        (when (> (card-value card) (logcount (player-canvas player)))
           (let ((draw (draw-from-deck (game-deck game))))
             (format t "  gain ~a from discard~%" (card-label draw))
             (add-card draw (player-hand player)))))))
@@ -234,13 +243,10 @@
     ;;       (game-discard game))
     (dotimes (i player-count)
       (let ((player (make-player :id i
-                                 :canvas (list (draw-from-deck deck))
-                                 :hand (loop with card-set = 0
-                                             repeat 5
-                                             do (setf card-set
-                                                      (add-card (draw-from-deck deck)
-                                                                card-set))
-                                             finally (return card-set)))))
+                                 :canvas (make-card-set (list
+                                                         (draw-from-deck deck)))
+                                 :hand (make-card-set (loop repeat 5
+                                                            collect (draw-from-deck deck))))))
         (push player (game-players game))))
     (mapcar (lambda (player next)
               (setf (player-next-player player) next))
