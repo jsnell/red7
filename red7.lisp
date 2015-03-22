@@ -37,7 +37,7 @@
   (size 0 :type (integer 0 49)))
 
 (defstruct (player)
-  id
+  (id 0 :type (mod 5))
   eliminated
   (hand nil :type card-set)
   (palette nil :type card-set)
@@ -263,6 +263,7 @@
     valid-moves))
 
 (defun execute-move (game player move)
+  (declare (optimize speed))
   (dolist (submove move)
     (let ((kind (car submove))
           (card (cdr submove)))
@@ -285,9 +286,11 @@
   (assert (eq player (who-is-winning game))))
 
 (defun undo-move (game player move)
+  (declare (optimize speed))
   (dolist (submove (reverse move))
     (let ((kind (car submove))
           (card (cdr submove)))
+      (declare (type (or null card) card))
       ;; (when card
       ;;   (format t "  undoing ~a ~a~%" kind (card-label card)))
       (when (and (eq kind :play) card)
@@ -297,7 +300,7 @@
               (add-card card (player-hand player))))
       (when (and (eq kind :discard) card)
         (let ((removed (pop (game-canvas game))))
-          (assert (= card removed)))
+          (assert (eql card removed)))
         (setf (player-hand player)
               (add-card card (player-hand player)))
         (when (> (card-value card) (logcount (player-palette player)))
@@ -322,30 +325,18 @@
               (setf (player-next-player player) next))
             (game-players game)
             (cdr (append (game-players game) (game-players game))))
-    (let ((outcomes (make-array (* 50 player-count) :initial-element 0))
+    (let ((outcomes (make-array (* 50 player-count)
+                                :element-type '(unsigned-byte 32)
+                                :initial-element 0))
           (depth (make-array 50
                              :element-type '(unsigned-byte 32)
                              :initial-element 0))
           (actions 0)
           (start-leader (who-is-winning game))
-          (*players-left* player-count)
-          (*turns* 0))
-      (declare (special *players-left* *turns*)
-               (fixnum actions))
+          (players-left player-count)
+          (turns 0))
+      (declare (type (unsigned-byte 32) actions players-left turns))
       (labels ((advance-to-next-player (player)
-                 (declare (optimize (speed 1)))
-                 (when (= *players-left* 1)
-                   (let ((winner
-                          (player-id (find-if-not #'player-eliminated
-                                                  (game-players game)))))
-                     (incf (aref outcomes (+ winner (* *turns* player-count))))
-                     (when (zerop (mod actions 10000000))
-                       (return-from play)
-                       (format t "winners: ~a~%actions: ~a~%turns: ~a~%"
-                               outcomes actions depth)))
-                   (return-from advance-to-next-player)
-                   #+nil
-                   (return-from play (list :gameover :turns turns)))
                  (dotimes (p (1- player-count))
                    (setf player (player-next-player player))
                    (unless (player-eliminated player)
@@ -355,14 +346,30 @@
                  ;; (format t "player ~a eliminated (canvas ~a)~%~a~%" *leader*
                  ;;         (card-label (first (game-canvas game)))
                  ;;         game)
-                 (let ((*players-left* (1- *players-left*)))
-                   (declare (special *players-left*))
-                   (setf (player-eliminated player) t)
-                   (advance-to-next-player player)
-                   (setf (player-eliminated player) nil)))
+                 (decf players-left)
+                 (setf (player-eliminated player) t)
+                 (after-eliminate player)
+                 (incf players-left)
+                 (setf (player-eliminated player) nil))
+               (after-eliminate (player)
+                 (when (> players-left 1)
+                   (return-from after-eliminate
+                     (advance-to-next-player player)))
+                 (let ((winner
+                        (player-id (locally
+                                       (declare (optimize (speed 1)))
+                                     (find-if-not #'player-eliminated
+                                                  (game-players game))))))
+                   (incf (aref outcomes
+                               (+ winner (* turns player-count))))
+                   (when (zerop (mod actions 10000000))
+                     (return-from play)
+                     (format t "winners: ~a~%actions: ~a~%turns: ~a~%"
+                             outcomes actions depth))))
                (select-move (player)
                  (let* ((moves (valid-moves game player))
                         (move-count (length moves)))
+                   (declare (ignorable move-count))
                    ;; (format t "player ~a has ~d moves~%"
                    ;;         *leader* move-count)
                    (if (not moves)
@@ -372,11 +379,11 @@
                          (execute-selected-move player move)))))
                (execute-selected-move (player move)
                  (incf actions)
-                 (let ((*turns* (1+ *turns*)))
-                   (declare (special *turns*))
-                   (incf (aref depth *turns*))
-                   (execute-move game player move)
-                   (advance-to-next-player player)
-                   (undo-move game player move))))
+                 (incf turns)
+                 (incf (aref depth turns))
+                 (execute-move game player move)
+                 (advance-to-next-player player)
+                 (undo-move game player move)
+                 (decf turns)))
         (advance-to-next-player start-leader))
       outcomes)))
