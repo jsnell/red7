@@ -97,7 +97,7 @@
 (defun remove-card (card card-set)
   (declare (type card card)
            (type card-set card-set))
-  (logand card-set (lognot (ash 1 card))))
+  (logandc2 card-set (ash 1 card)))
 
 (defun add-card (card card-set)
   (declare (type card card)
@@ -116,9 +116,12 @@
     set))
 
 (defmacro do-cards ((card card-set) &body body)
-  `(loop for ,card from 55 downto 0
-         when (logbitp ,card ,card-set)
-         do ,@body))
+  (let ((modified-card (gensym)))
+    `(loop with ,modified-card of-type card-set = ,card-set
+           until (zerop ,modified-card)
+           for ,card = (1- (integer-length ,modified-card))
+           do (setf (logbitp ,card ,modified-card) nil)
+           do ,@body)))
 
 (defun player-score (player type)
   (declare (optimize speed))
