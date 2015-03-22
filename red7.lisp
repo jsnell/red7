@@ -23,6 +23,7 @@
 
 (declaim (inline card-color))
 (defun card-color (card)
+  (declare (type card card))
   (ldb (byte 3 0) card))
 
 (declaim (inline card-value))
@@ -121,47 +122,39 @@
 
 (defun player-score (player type)
   (declare (optimize speed))
-  (labels ((score-for-condition (condition)
-             (let ((matching-cards 0)
-                   (best-matching-card 0))
-               (declare (type card-index matching-cards best-matching-card))
-               (do-cards (card (player-palette player))
-                 (when (funcall condition card)
-                   (incf matching-cards)
-                   (when (zerop best-matching-card)
-                     (setf best-matching-card (card-score card)))))
-               (the fixnum (+ best-matching-card (* 100 matching-cards)))))
+  (labels ((score-for-mask (mask)
+             (let ((matching-cards (logand (player-palette player)
+                                           mask)))
+               (let ((matching-cards (logcount matching-cards))
+                     (best-matching-card (integer-length matching-cards)))
+                 (declare (type (mod 64) matching-cards best-matching-card))
+                 (+ best-matching-card (* 64 matching-cards)))))
            (red ()
-             (do-cards (card (player-palette player))
-               ;; Score of first card.
-               (return (card-score card))))
+             (card-score (integer-length (player-palette player))))
            (orange ()
-             (loop for value from 1 to 7
-                   maximize (score-for-condition
-                             (lambda (card)
-                               (eq value (card-value card))))))
+             (loop for mask of-type card-set = #xff000000000000 then (ash mask -8)
+                   repeat 7
+                   maximize (score-for-mask mask)))
            (yellow ()
-             (loop for color from 1 to 7
-                   maximize (score-for-condition
-                             (lambda (card)
-                               (= color (card-color card))))))
+             (loop for mask of-type card-set = #x80808080808080 then (ash mask -1)
+                   repeat 7
+                   maximize (score-for-mask mask)))
            (green ()
-             (score-for-condition (lambda (card)
-                                    (evenp (card-value card)))))
+             (score-for-mask #x00ff00ff00ff00))
            (blue ()
-             (let ((colors-seen (make-array 7 :initial-element nil))
-                   (color-count 0)
-                   (best-card 0))
-               (declare (type (mod 8) color-count)
-                        (type card-index best-card))
-               (do-cards (card (player-palette player))
-                 (let ((index (1- (card-color card))))
-                   (unless (aref colors-seen index)
-                     (setf (aref colors-seen index) t)
-                     (incf color-count)
-                     (unless (zerop best-card)
-                       (setf best-card (card-score card))))))
-               (+ (* 100 color-count) best-card)))
+             (let* ((palette (player-palette player))
+                    (best-card (card-score (integer-length palette)))
+                    (colors 0))
+               (declare (type (mod 64) best-card)
+                        (type card-set colors))
+               ;; Collapse all the card values out together, leaving
+               ;; only one bit per color that's present.
+               (loop with mask of-type card-set = #xff
+                     for value of-type card-set = palette then (ash value -8)
+                     repeat 7
+                     do (setf colors (logior colors (logand mask value))))
+               (+ best-card (* 64 (the (mod 64)
+                                       (logcount colors))))))
            (indigo ()
              (let ((prev nil)
                    (current-run-score 0)
@@ -173,7 +166,7 @@
                         (setf prev card))
                        ((= (card-value card) (card-value prev)))
                        ((= (card-value card) (1- (card-value prev)))
-                        (incf current-run-score 100)
+                        (incf current-run-score 64)
                         (setf prev card))
                        (t
                         (setf current-run-score (card-score card))
@@ -181,9 +174,8 @@
                  (setf best-score (max best-score current-run-score)))
                best-score))
            (violet ()
-             (score-for-condition (lambda (card)
-                                    (< (card-value card) 4)))))
-    (declare (inline score-for-condition)
+             (score-for-mask #x00000000ffffff)))
+    (declare (inline score-for-mask)
              (notinline red orange yellow green blue indigo violet))
     (ecase type
       (#.red (red))
@@ -195,6 +187,7 @@
       (#.violet (violet)))))
 
 (defun who-is-winning (game)
+  (declare (optimize speed))
   (let ((type (if (game-canvas game)
                   (card-color (first (game-canvas game)))
                   #.red))
@@ -202,15 +195,22 @@
         ;; at all.
         (best-score 0)
         best-player)
+    ;; (format t "---~%canvas ~a~%" (when (game-canvas game)
+    ;;                                (card-label (first (game-canvas game)))))
     (dolist (player (game-players game))
       (unless (player-eliminated player)
         (let ((score (player-score player type)))
+          ;; (format t "player ~a, palette ~a, score ~a~%"
+          ;;         (player-id player)
+          ;;         (cards-to-list (player-palette player))
+          ;;         score)
           (when (> score best-score)
             (setf best-score score
                   best-player player)))))
     best-player))
 
 (defun valid-moves (game player)
+  (declare (optimize speed))
   (let (valid-moves)
     (labels ((check-discard (play-card)
                (do-cards (canvas-card (player-hand player))
@@ -295,7 +295,10 @@
               (setf (player-next-player player) next))
             (game-players game)
             (cdr (append (game-players game) (game-players game))))
-    (let ((outcomes (make-hash-table :test 'equal))
+    (let ((outcomes (make-array (* 50 player-count) :initial-element 0))
+          (depth (make-array 50
+                             :element-type '(unsigned-byte 32)
+                             :initial-element 0))
           (actions 0)
           (*leader* (who-is-winning game))
           (*players-left* player-count)
@@ -305,16 +308,13 @@
       (labels ((advance-to-next-player ()
                  (declare (optimize (speed 1)))
                  (when (= *players-left* 1)
-                   (let ((outcome
-                          (format nil "win for ~a in ~a~%"
-                                  (player-id (find-if-not #'player-eliminated
-                                                          (game-players game)))
-                                  *turns*)))
-                     (when (>= actions 1000000)
-                       (return-from play outcomes))
+                   (let ((winner
+                          (player-id (find-if-not #'player-eliminated
+                                                  (game-players game)))))
+                     (incf (aref outcomes (+ winner (* *turns* player-count))))
                      (when (zerop (mod actions 100000))
-                       (format t "~a [~a]~%" outcomes actions))
-                     (incf (gethash outcome outcomes 0)))
+                       (format t "winners: ~a~%actions: ~a~%turns: ~a~%"
+                               outcomes actions depth)))
                    (return-from advance-to-next-player)
                    #+nil
                    (return-from play (list :gameover :turns turns)))
@@ -326,7 +326,7 @@
                        (return)))
                    (select-move)))
                (eliminate-leader ()
-                 ;; (format t "player ~a eliminated (canvas ~a)~%~a~%" leader
+                 ;; (format t "player ~a eliminated (canvas ~a)~%~a~%" *leader*
                  ;;         (card-label (first (game-canvas game)))
                  ;;         game)
                  (let ((*players-left* (1- *players-left*)))
@@ -336,20 +336,21 @@
                    (setf (player-eliminated *leader*) nil)))
                (select-move ()
                  (let* ((moves (valid-moves game *leader*))
-                        (move-count (length moves))
-                        (move (unless (zerop move-count)
-                                (nth (random move-count) moves))))
+                        (move-count (length moves)))
                    ;; (format t "player ~a has ~d moves~%"
-                   ;;         leader move-count)
-                   (if (not move)
+                   ;;         *leader* move-count)
+                   (if (not moves)
                        (eliminate-leader)
                        (dolist (move moves)
+                        ;; let ((move (nth (random move-count) moves)))
                          (execute-selected-move move)))))
                (execute-selected-move (move)
                  (incf actions)
                  (let ((*turns* (1+ *turns*)))
                    (declare (special *turns*))
+                   (incf (aref depth *turns*))
                    (execute-move game *leader* move)
                    (advance-to-next-player)
                    (undo-move game *leader* move))))
-        (advance-to-next-player)))))
+        (advance-to-next-player))
+      outcomes)))
