@@ -14,7 +14,10 @@
 ;; A card is an integer between 0 and 55 (inclusive). The low 3 bits
 ;; are the color, with a "0" being a dummy color that's not used in
 ;; any way. The next 3 bits are the card's numeric value - 1 (0-6).
-(deftype card () `(mod 56))
+(deftype card () '(mod 56))
+
+;; An unordered collection of cards is represented as a 56-bit integer.
+(deftype card-set () '(unsigned-byte 56))
 
 (defun card-color (card)
   (ldb (byte 3 0) card))
@@ -30,7 +33,7 @@
 (defstruct (player)
   id
   eliminated
-  (hand nil :type list)
+  (hand nil :type card-set)
   (canvas nil :type list)
   (next-player nil :type (or null player)))
 
@@ -44,7 +47,7 @@
   (print-unreadable-object (player stream :type 'player)
     (format stream ":ID ~A :HAND ~A :CANVAS ~A :NEXT-PLAYER ~A"
             (player-id player)
-            (mapcar #'card-label (player-hand player))
+            (cards-to-list (player-hand player))
             (mapcar #'card-label (player-canvas player))
             (let ((next (player-next-player player)))
               (if next
@@ -53,7 +56,7 @@
 
 (defun card-label (card)
   (format nil "~A-~A"
-          (card-color card)
+          (nth (- 7 (card-color card)) *colors*)
           (card-value card)))
 
 (defun make-deck ()
@@ -81,6 +84,26 @@
 
 (defun card-score (card)
   card)
+
+(defun remove-card (card card-set)
+  (declare (type card card)
+           (type card-set card-set))
+  (logand card-set (lognot (ash 1 card))))
+
+(defun add-card (card card-set)
+  (declare (type card card)
+           (type card-set card-set))
+  (logior card-set (ash 1 card)))
+
+(defun cards-to-list (card-set)
+  (loop for i from 0 below 55
+        when (logbitp i card-set)
+        collect (card-label i)))
+
+(defmacro do-cards ((card card-set) &body body)
+  `(loop for ,card from 55 downto 0
+         when (logbitp ,card ,card-set)
+         do ,@body))
 
 (defun player-score (player type)
   (let ((canvas (sort (copy-list (player-canvas player))
@@ -161,42 +184,48 @@
 
 (defun valid-moves (game player)
   (let (valid-moves)
-    (dolist (play-card (cons nil (player-hand player)))
-      (when play-card
-        (push play-card (player-canvas player))
-        (when (eq player (who-is-winning game))
-          (push (list (cons :play play-card)) valid-moves)))
-
-      (dolist (discard-card (player-hand player))
-        (unless (eq play-card discard-card)
-          (push discard-card (game-discard game))
-          (when (eq player (who-is-winning game))
-            (push (list (cons :play play-card)
-                        (cons :discard discard-card))
-                  valid-moves))
-          (pop (game-discard game))))
-      (when play-card
-        (pop (player-canvas player))))
+    (labels ((check-discards (play-card)
+               (do-cards (discard-card (player-hand player))
+                 (unless (eq play-card discard-card)
+                   (push discard-card (game-discard game))
+                   (when (eq player (who-is-winning game))
+                     (push (list (cons :play play-card)
+                                 (cons :discard discard-card))
+                           valid-moves))
+                   (pop (game-discard game)))))
+             (check-plays (check-discards)
+               (do-cards (play-card (player-hand player))
+                 (when play-card
+                   (push play-card (player-canvas player))
+                   (when (eq player (who-is-winning game))
+                     (push (list (cons :play play-card)) valid-moves)))
+                 (when check-discards
+                   (check-discards play-card))
+                 (when play-card
+                   (pop (player-canvas player))))))
+      (check-plays nil)
+      (check-plays t)
+      (check-discards nil))
     valid-moves))
 
-  (defun execute-move (game player move)
-    (format t "  executing move ~a~%" move)
-    (dolist (submove move)
-      (let ((kind (car submove))
-            (card (cdr submove)))
-        (when (and (eq kind :play) card)
-          (push card (player-canvas player))
-          (setf (player-hand player)
-                (delete card (player-hand player))))
-        (when (and (eq kind :discard) card)
-          (push card (game-discard game))
-          (setf (player-hand player)
-                (delete card (player-hand player)))
-          (when (> (card-value card) (length (player-canvas player)))
-            (let ((draw (draw-from-deck (game-deck game))))
-              (format t "  gain ~a from discard~%" (card-label draw))
-              (push draw (player-hand player)))))))
-    (assert (eq player (who-is-winning game))))
+(defun execute-move (game player move)
+  (format t "  executing move ~a~%" move)
+  (dolist (submove move)
+    (let ((kind (car submove))
+          (card (cdr submove)))
+      (when (and (eq kind :play) card)
+        (push card (player-canvas player))
+        (setf (player-hand player)
+              (remove-card card (player-hand player))))
+      (when (and (eq kind :discard) card)
+        (push card (game-discard game))
+        (setf (player-hand player)
+              (remove-card card (player-hand player)))
+        (when (> (card-value card) (length (player-canvas player)))
+          (let ((draw (draw-from-deck (game-deck game))))
+            (format t "  gain ~a from discard~%" (card-label draw))
+            (add-card draw (player-hand player)))))))
+  (assert (eq player (who-is-winning game))))
 
 (defun play (player-count)
   (let* ((game (make-game))
@@ -206,8 +235,12 @@
     (dotimes (i player-count)
       (let ((player (make-player :id i
                                  :canvas (list (draw-from-deck deck))
-                                 :hand (loop repeat 5
-                                             collect (draw-from-deck deck)))))
+                                 :hand (loop with card-set = 0
+                                             repeat 5
+                                             do (setf card-set
+                                                      (add-card (draw-from-deck deck)
+                                                                card-set))
+                                             finally (return card-set)))))
         (push player (game-players game))))
     (mapcar (lambda (player next)
               (setf (player-next-player player) next))
