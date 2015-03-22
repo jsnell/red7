@@ -275,16 +275,21 @@
               (setf (player-next-player player) next))
             (game-players game)
             (cdr (append (game-players game) (game-players game))))
-    (let ((*leader* (who-is-winning game))
+    (let ((outcomes (make-hash-table :test 'equal))
+          (*leader* (who-is-winning game))
           (*players-left* player-count)
           (*turns* 0))
       (declare (special *leader* *players-left* *turns*))
       (labels ((advance-to-next-player ()
                  (when (= *players-left* 1)
-                   (format t "win for ~a in ~a~%"
-                           (player-id (find-if-not #'player-eliminated
-                                                   (game-players game)))
-                           *turns*)
+                   (let ((outcome
+                          (format nil "win for ~a in ~a~%"
+                                  (player-id (find-if-not #'player-eliminated
+                                                          (game-players game)))
+                                  *turns*)))
+                     (when (zerop (random 100000))
+                       (format t "~a~%" outcomes))
+                     (incf (gethash outcome outcomes 0)))
                    (return-from advance-to-next-player)
                    #+nil
                    (return-from play (list :gameover :turns turns)))
@@ -313,7 +318,8 @@
                    ;;         leader move-count)
                    (if (not move)
                        (eliminate-leader)
-                       (execute-selected-move move))))
+                       (dolist (move moves)
+                         (execute-selected-move move)))))
                (execute-selected-move (move)
                  (let ((*turns* (1+ *turns*)))
                    (declare (special *turns*))
