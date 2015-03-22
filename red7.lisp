@@ -41,7 +41,7 @@
   eliminated
   (hand nil :type card-set)
   (palette nil :type card-set)
-  (score-cache (make-array 16) :type simple-vector)
+  (score-cache (make-array 16) :type (simple-vector 16))
   (next-player nil :type (or null player)))
 
 (defstruct (game)
@@ -193,13 +193,16 @@
       (#.violet (violet)))))
 
 (defun player-score (player type)
+  (declare (optimize speed)
+           (type (mod 8) type))
   (let* ((palette (player-palette player))
-         (cached-key (aref (player-score-cache player) type)))
-    (if (= cached-key palette)
-        (aref (player-score-cache player) (+ type 8))
+         (cache (player-score-cache player))
+         (cached-key (aref cache type)))
+    (if (eql cached-key palette)
+        (aref cache (+ type 8))
         (progn
-          (setf (aref (player-score-cache player) type) palette)
-          (setf (aref (player-score-cache player) (+ type 8))
+          (setf (aref cache type) palette)
+          (setf (aref cache (+ type 8))
                 (player-score* player type))))))
 
 
@@ -309,6 +312,20 @@
             (setf (player-hand player)
                   (remove-card draw (player-hand player)))))))))
 
+(defun print-outcomes (outcomes player-count)
+  (let ((total-wins (reduce #'+ outcomes)))
+    (dotimes (p player-count)
+      (format t "id: ~a " p)
+      (loop with sum = 0
+            for i from p below (length outcomes) by player-count
+            do (multiple-value-bind (turn player)
+                   (truncate i player-count)
+                 (let ((wins (aref outcomes i)))
+                   ;; (format t "~a " wins)
+                   (incf sum wins)))
+            finally (format t " (sum=~a, ~a%)~%" sum
+                            (float (* 100 (/ sum total-wins))))))))
+
 (defun play (player-count)
   (declare (optimize speed)
            (type (mod 5) player-count))
@@ -335,13 +352,15 @@
           (start-leader (who-is-winning game))
           (players-left player-count)
           (turns 0))
-      (declare (type (unsigned-byte 32) actions players-left turns))
+      (declare (type (unsigned-byte 60) actions players-left turns))
       (labels ((advance-to-next-player (player)
+                 (incf turns)
                  (dotimes (p (1- player-count))
                    (setf player (player-next-player player))
                    (unless (player-eliminated player)
                      (select-move player)
-                     (return))))
+                     (return)))
+                 (decf turns))
                (eliminate-player (player)
                  ;; (format t "player ~a eliminated (canvas ~a)~%~a~%" *leader*
                  ;;         (card-label (first (game-canvas game)))
@@ -353,19 +372,19 @@
                  (setf (player-eliminated player) nil))
                (after-eliminate (player)
                  (when (> players-left 1)
-                   (return-from after-eliminate
-                     (advance-to-next-player player)))
+                   (advance-to-next-player player)
+                   (return-from after-eliminate))
                  (let ((winner
-                        (player-id (locally
-                                       (declare (optimize (speed 1)))
-                                     (find-if-not #'player-eliminated
-                                                  (game-players game))))))
+                        (player-id (loop for p = player then (player-next-player p)
+                                         unless (player-eliminated p)
+                                         return p))))
                    (incf (aref outcomes
                                (+ winner (* turns player-count))))
-                   (when (zerop (mod actions 10000000))
-                     (return-from play)
-                     (format t "winners: ~a~%actions: ~a~%turns: ~a~%"
-                             outcomes actions depth))))
+                   (when (zerop (logand actions #xffffff))
+                     ;; (return-from play)
+                     (print-outcomes outcomes player-count)
+                     (format t "actions: ~a~%turns: ~a~%"
+                             actions depth))))
                (select-move (player)
                  (let* ((moves (valid-moves game player))
                         (move-count (length moves)))
@@ -374,16 +393,18 @@
                    ;;         *leader* move-count)
                    (if (not moves)
                        (eliminate-player player)
-                       (dolist (move moves)
-                        ;; let ((move (nth (random move-count) moves)))
-                         (execute-selected-move player move)))))
+                       (if (<= (length moves) 4)
+                           (dolist (move moves)
+                             (execute-selected-move player move))
+                           (dotimes (i 4)
+                             (let ((move (nth (random move-count) moves)))
+                               (execute-selected-move player move)))))))
                (execute-selected-move (player move)
                  (incf actions)
-                 (incf turns)
                  (incf (aref depth turns))
                  (execute-move game player move)
                  (advance-to-next-player player)
                  (undo-move game player move)
-                 (decf turns)))
+                 nil))
         (advance-to-next-player start-leader))
       outcomes)))
