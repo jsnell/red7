@@ -133,7 +133,6 @@
                                            mask)))
                (let ((matching-cards (logcount matching-cards))
                      (best-matching-card (integer-length matching-cards)))
-                 (declare (type (mod 64) matching-cards best-matching-card))
                  (+ best-matching-card (* 64 matching-cards)))))
            (red ()
              (card-score (integer-length (player-palette player))))
@@ -159,8 +158,7 @@
                      for value of-type card-set = palette then (ash value -8)
                      repeat 7
                      do (setf colors (logior colors (logand mask value))))
-               (+ best-card (* 64 (the (mod 64)
-                                       (logcount colors))))))
+               (+ best-card (* 64 (logcount colors)))))
            (indigo ()
              (let ((prev nil)
                    (current-run-score 0)
@@ -259,7 +257,9 @@
                        (remove-card play-card (player-palette player))))))
       (check-plays)
       (check-discard nil))
-    valid-moves))
+    ;; Reverse the list; we're generally expecting the strongest moves to
+    ;; be at the end of the original list.
+    (nreverse valid-moves)))
 
 (defun execute-move (game player move)
   (declare (optimize speed))
@@ -282,6 +282,7 @@
             ;; (format t "  gain ~a from discard~%" (card-label draw))
             (setf (player-hand player)
                   (add-card draw (player-hand player))))))))
+  #+nil
   (assert (eq player (who-is-winning game))))
 
 (defun undo-move (game player move)
@@ -344,6 +345,7 @@
           (depth (make-array 50
                              :element-type '(unsigned-byte 32)
                              :initial-element 0))
+          (lengths (make-array 50 :element-type '(unsigned-byte 32)))
           (actions 0)
           (start-leader (who-is-winning game))
           (players-left player-count)
@@ -379,17 +381,18 @@
                    (when (zerop (logand actions #xffffff))
                      ;; (return-from play)
                      (print-outcomes outcomes player-count)
-                     (format t "actions: ~a~%turns: ~a~%"
-                             actions depth))))
+                     (format t "actions: ~a~%turns: ~a~%available moves: ~a~%"
+                             actions depth lengths))))
                (select-move (player)
                  (let* ((moves (valid-moves game player))
                         (move-count (length moves)))
                    (declare (ignorable move-count))
                    ;; (format t "player ~a has ~d moves~%"
                    ;;         *leader* move-count)
+                   (incf (aref lengths move-count))
                    (if (not moves)
                        (eliminate-player player)
-                       (if (<= (length moves) 4)
+                       (if (<= move-count 6)
                            (dolist (move moves)
                              (execute-selected-move player move))
                            (dotimes (i 4)
