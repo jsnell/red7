@@ -148,17 +148,15 @@
              (score-for-mask #x00ff00ff00ff00))
            (blue ()
              (let* ((palette (player-palette player))
-                    (best-card (card-score (integer-length palette)))
-                    (colors 0))
-               (declare (type (mod 64) best-card)
-                        (type card-set colors))
-               ;; Collapse all the card values out together, leaving
-               ;; only one bit per color that's present.
-               (loop with mask of-type card-set = #xff
-                     for value of-type card-set = palette then (ash value -8)
-                     repeat 7
-                     do (setf colors (logior colors (logand mask value))))
-               (+ best-card (* 64 (logcount colors)))))
+                    (best-card (card-score (integer-length palette))))
+               (declare (type (mod 64) best-card))
+               ;; OR all bytes into the lowest byte -> a bit will be set
+               ;; for each color that's present.
+               (setf palette (logior palette (ash palette -32)))
+               (setf palette (logior palette (ash palette -16)))
+               (setf palette (logior palette (ash palette -8)))
+               (+ best-card
+                  (* 64 (logcount (ldb (byte 8 0) palette))))))
            (indigo ()
              (let ((prev nil)
                    (current-run-score 0)
@@ -351,6 +349,7 @@
           (players-left player-count)
           (turns 0))
       (declare (type (unsigned-byte 60) actions players-left turns))
+      (format t "starting player: ~a~%" (player-id start-leader))
       (labels ((advance-to-next-player (player)
                  (incf turns)
                  (dotimes (p (1- player-count))
@@ -392,7 +391,7 @@
                    (incf (aref lengths move-count))
                    (if (not moves)
                        (eliminate-player player)
-                       (if (<= move-count 6)
+                       (if (<= move-count 8)
                            (dolist (move moves)
                              (execute-selected-move player move))
                            (dotimes (i 4)
@@ -406,4 +405,5 @@
                  (undo-move game player move)
                  nil))
         (advance-to-next-player start-leader))
+      (print-outcomes outcomes player-count)
       outcomes)))
