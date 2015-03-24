@@ -202,12 +202,9 @@
                 (player-score* player type))))))
 
 
-(defun who-is-winning (game)
+(defun who-is-winning (game rule)
   (declare (optimize speed))
-  (let ((type (if (game-canvas game)
-                  (card-color (first (game-canvas game)))
-                  #.red))
-        ;; Note: all scoring types must score 0 when the palette doesn't match
+  (let (;; Note: all scoring types must score 0 when the palette doesn't match
         ;; at all.
         (best-score 0)
         best-player)
@@ -215,7 +212,7 @@
     ;;                                (card-label (first (game-canvas game)))))
     (dolist (player (game-players game))
       (unless (player-eliminated player)
-        (let ((score (player-score player type)))
+        (let ((score (player-score player rule)))
           (declare (fixnum score))
           ;; (format t "player ~a, palette ~a, score ~a~%"
           ;;         (player-id player)
@@ -273,17 +270,16 @@
                              (and (eql canvas-color (card-color discard-card))
                                   (>= (logcount (player-palette player))
                                       (card-value discard-card))))
-                   (push discard-card (game-canvas game))
-                   (when (eq player (who-is-winning game))
+                   (when (eq player (who-is-winning game
+                                                    (card-color discard-card)))
                      (push (merge-moves (allocate-move :play play-card)
                                         (allocate-move :discard discard-card))
-                           valid-moves))
-                   (pop (game-canvas game)))))
+                           valid-moves)))))
              (check-plays ()
                (do-cards (play-card (player-hand player))
                  (setf (player-palette player)
                        (add-card play-card (player-palette player)))
-                 (when (eq player (who-is-winning game))
+                 (when (eq player (who-is-winning game canvas-color))
                    (push (allocate-move :play play-card) valid-moves))
                  (check-discard play-card)
                  (setf (player-palette player)
@@ -377,7 +373,7 @@
                              :initial-element 0))
           (lengths (make-array 100 :element-type '(unsigned-byte 32)))
           (actions 0)
-          (start-leader (who-is-winning game))
+          (start-leader (who-is-winning game #.red))
           (players-left player-count)
           (turns 0))
       (declare (type (unsigned-byte 60) actions players-left turns))
