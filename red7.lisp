@@ -223,6 +223,17 @@
                   best-player player)))))
     best-player))
 
+(defun player-is-winning (player rule)
+  (declare (optimize speed))
+  (loop with orig-player = player
+        with orig-score of-type fixnum = (player-score player rule)
+        for player = (player-next-player orig-player) then (player-next-player player)
+        until (eql player orig-player)
+        do (when (>= (the fixnum (player-score player rule))
+                     orig-score)
+             (return-from player-is-winning nil)))
+  t)
+
 (deftype move () '(unsigned-byte 16))
 
 (declaim (inline allocate-move))
@@ -270,8 +281,7 @@
                              (and (eql canvas-color (card-color discard-card))
                                   (>= (logcount (player-palette player))
                                       (card-value discard-card))))
-                   (when (eq player (who-is-winning game
-                                                    (card-color discard-card)))
+                   (when (player-is-winning player (card-color discard-card))
                      (push (merge-moves (allocate-move :play play-card)
                                         (allocate-move :discard discard-card))
                            valid-moves)))))
@@ -279,7 +289,7 @@
                (do-cards (play-card (player-hand player))
                  (setf (player-palette player)
                        (add-card play-card (player-palette player)))
-                 (when (eq player (who-is-winning game canvas-color))
+                 (when (player-is-winning player canvas-color)
                    (push (allocate-move :play play-card) valid-moves))
                  (check-discard play-card)
                  (setf (player-palette player)
