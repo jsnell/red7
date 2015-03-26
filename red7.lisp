@@ -296,9 +296,7 @@
                        (remove-card play-card (player-palette player))))))
       (check-plays)
       (check-discard nil))
-    ;; Reverse the list; we're generally expecting the strongest moves to
-    ;; be at the end of the original list.
-    (nreverse valid-moves)))
+    valid-moves))
 
 (defun execute-move (game player move)
   (declare (optimize speed)
