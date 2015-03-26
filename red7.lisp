@@ -5,11 +5,8 @@
 
 (declaim (optimize (debug 2)))
 
-(eval-when (:load-toplevel :compile-toplevel)
-  (defparameter *colors* '(red orange yellow green blue indigo violet))
-  (loop for color in *colors*
-        for value from 7 downto 1
-        do (setf (symbol-value color) value)))
+(eval-when (:load-toplevel :compile-toplevel :execute)
+  (defparameter *colors* '(red orange yellow green blue indigo violet)))
 
 ;; A card is an integer between 0 and 55 (inclusive). The low 3 bits
 ;; are the color, with a "0" being a dummy color that's not used in
@@ -67,9 +64,9 @@
 (defun make-deck ()
   (let ((deck (%make-deck)))
     (dotimes (value 7)
-      (dolist (color *colors*)
+      (dotimes (color 7)
         (setf (aref (deck-cards deck) (deck-size deck))
-              (logior (symbol-value color)
+              (logior (1+ color)
                       (ash value 3)))
         (incf (deck-size deck))))
     (shuffle-deck deck)
@@ -88,10 +85,6 @@
   (prog1
       (aref (deck-cards deck) (deck-size deck))
     (incf (deck-size deck))))
-
-(declaim (inline card-score))
-(defun card-score (card)
-  card)
 
 (declaim (inline remove-card))
 (defun remove-card (card card-set)
@@ -124,16 +117,16 @@
            do (setf (logbitp ,card ,modified-card) nil)
            do ,@body)))
 
-(defun player-score* (player type)
+(defun card-set-score (card-set rule)
   (declare (optimize speed))
   (labels ((score-for-mask (mask)
-             (let ((matching-cards (logand (player-palette player)
+             (let ((matching-cards (logand card-set
                                            mask)))
                (let ((matching-cards (logcount matching-cards))
                      (best-matching-card (integer-length matching-cards)))
                  (+ best-matching-card (* 64 matching-cards)))))
            (red ()
-             (card-score (integer-length (player-palette player))))
+             (integer-length card-set))
            (orange ()
              (loop for mask of-type card-set = #xff000000000000 then (ash mask -8)
                    repeat 7
@@ -145,8 +138,8 @@
            (green ()
              (score-for-mask #x00ff00ff00ff00))
            (blue ()
-             (let* ((palette (player-palette player))
-                    (best-card (card-score (integer-length palette))))
+             (let* ((palette card-set)
+                    (best-card (integer-length palette)))
                ;; OR all bytes into the lowest byte -> a bit will be set
                ;; for each color that's present.
                (setf palette (logior palette (ash palette -32)))
@@ -159,16 +152,16 @@
                    (current-run-score 0)
                    (best-score 0))
                (declare (type (unsigned-byte 16) current-run-score best-score))
-               (do-cards (card (player-palette player))
+               (do-cards (card card-set)
                  (cond ((not prev)
-                        (setf current-run-score (card-score card))
+                        (setf current-run-score card)
                         (setf prev card))
                        ((= (card-value card) (card-value prev)))
                        ((= (card-value card) (1- (card-value prev)))
                         (incf current-run-score 64)
                         (setf prev card))
                        (t
-                        (setf current-run-score (card-score card))
+                        (setf current-run-score card)
                         (setf prev card)))
                  (setf best-score (max best-score current-run-score)))
                best-score))
@@ -176,32 +169,32 @@
              (score-for-mask #x00000000ffffff)))
     (declare (inline score-for-mask)
              (notinline red orange yellow green blue indigo violet))
-    (ecase type
-      (#.red (red))
-      (#.orange (orange))
-      (#.yellow (yellow))
-      (#.green (green))
-      (#.blue (blue))
-      (#.indigo (indigo))
-      (#.violet (violet)))))
+    (ecase rule
+      (7 (red))
+      (6 (orange))
+      (5 (yellow))
+      (4 (green))
+      (3 (blue))
+      (2 (indigo))
+      (1 (violet)))))
 
-(defun player-score (player type)
+(defun player-score (player rule)
   (declare (optimize speed)
-           (type (mod 8) type))
+           (type (mod 8) rule))
   (let* ((palette (player-palette player))
          (cache (player-score-cache player))
-         (cached-key (aref cache type)))
+         (cached-key (aref cache rule)))
     (if (eql cached-key palette)
-        (aref cache (+ type 8))
+        (aref cache (+ rule 8))
         (progn
-          (setf (aref cache type) palette)
-          (setf (aref cache (+ type 8))
-                (player-score* player type))))))
+          (setf (aref cache rule) palette)
+          (setf (aref cache (+ rule 8))
+                (card-set-score palette rule))))))
 
 
 (defun who-is-winning (game rule)
   (declare (optimize speed))
-  (let (;; Note: all scoring types must score 0 when the palette doesn't match
+  (let (;; Note: all scoring rules must score 0 when the palette doesn't match
         ;; at all.
         (best-score 0)
         best-player)
@@ -266,16 +259,13 @@
                     (,card (ldb (byte 6 0) ,move)))
                 ,@body))))
 
-(defun valid-moves (game player)
+(defun valid-moves (current-rule player)
   (declare (optimize speed))
-  (let ((valid-moves)
-        (canvas-color (if (game-canvas game)
-                          (card-color (first (game-canvas game)))
-                          #.red)))
+  (let ((valid-moves))
     (labels ((check-discard (play-card)
                (do-cards (discard-card (player-hand player))
                  (unless (or (eql play-card discard-card)
-                             (and (eql canvas-color (card-color discard-card))
+                             (and (eql current-rule (card-color discard-card))
                                   (>= (logcount (player-palette player))
                                       (card-value discard-card))))
                    (when (player-is-winning player (card-color discard-card))
@@ -286,7 +276,7 @@
                (do-cards (play-card (player-hand player))
                  (setf (player-palette player)
                        (add-card play-card (player-palette player)))
-                 (when (player-is-winning player canvas-color)
+                 (when (player-is-winning player current-rule)
                    (push (allocate-move :play play-card) valid-moves))
                  (check-discard play-card)
                  (setf (player-palette player)
@@ -340,34 +330,39 @@
           (setf (player-hand player)
                 (remove-card draw (player-hand player))))))))
 
-(defun print-outcomes (outcomes player-count)
+(defun win-ratios (outcomes player-count)
   (let ((total-wins (reduce #'+ outcomes)))
-    (dotimes (p player-count)
-      (format t "id: ~a " p)
-      (loop with sum = 0
-            for i from p below (length outcomes) by player-count
-            do (multiple-value-bind (turn player)
-                   (truncate i player-count)
-                 (let ((wins (aref outcomes i)))
-                   ;; (format t "~a " wins)
-                   (incf sum wins)))
-            finally (format t " (sum=~a, ~a%)~%" sum
-                            (float (* 100 (/ sum total-wins))))))))
+    (loop for p below player-count
+          collect (cons p
+                        (/ (loop for i from p below (length outcomes) by player-count
+                                 summing (aref outcomes i))
+                           total-wins)))))
+
+(defun print-outcomes (outcomes player-count)
+  (let ((win-ratios (win-ratios outcomes player-count)))
+    (dolist (record win-ratios)
+      (destructuring-bind (id . win-ratio) record
+        (format t "id: ~a, ~a%~%" id
+                (* 100.0 win-ratio))))))
 
 (defun play (player-count game-count)
   (declare (optimize speed)
            (type (unsigned-byte 32) game-count)
            (type (mod 5) player-count))
-  (let ((outcomes (make-array (* 50 player-count)
-                              :element-type '(unsigned-byte 62)
-                              :initial-element 0))
+  (let ((cumulative-outcomes (make-array (* 50 player-count)
+                                         :element-type '(unsigned-byte 62)
+                                         :initial-element 0))
         (depth (make-array 50
                            :element-type '(unsigned-byte 62)
                            :initial-element 0))
+        rows
         (lengths (make-array 100 :element-type '(unsigned-byte 62)))
         (actions 0))
     (dotimes (game-index game-count)
       (let* ((game (make-game))
+             (outcomes (make-array (* 50 player-count)
+                                   :element-type '(unsigned-byte 62)
+                                   :initial-element 0))
              (deck (game-deck game)))
         (dotimes (i player-count)
           (let ((player (make-player :palette (make-card-set (list
@@ -379,7 +374,7 @@
                   (setf (player-next-player player) next))
                 (game-players game)
                 (cdr (append (game-players game) (game-players game))))
-        (let ((start-leader (who-is-winning game #.red))
+        (let ((start-leader (who-is-winning game 7))
               (players-left player-count)
               (turns 0))
           (declare (type (unsigned-byte 60) actions players-left turns))
@@ -418,12 +413,18 @@
                          (progress-info))))
                    (progress-info ()
                      ;; (return-from play)
+                     (format t "Match outcomes~%")
                      (print-outcomes outcomes player-count)
-                     (format t "games: ~a~%actions: ~a~%turns: ~a~%available moves: ~a~%"
-                             (1+ game-index)
+                     (format t "Cumulative outcomes~%")
+                     (print-outcomes cumulative-outcomes player-count)
+                     (format t "games: ~a/~a~%actions: ~a~%turns: ~a~%available moves: ~a~%"
+                             (1+ game-index) game-count
                              actions depth lengths))
                    (select-move (player)
-                     (let* ((moves (valid-moves game player))
+                     (let* ((current-rule (if (game-canvas game)
+                                              (card-color (first (game-canvas game)))
+                                              7))
+                            (moves (valid-moves current-rule player))
                             (move-count (length moves)))
                        (declare (ignorable move-count))
                        ;; (format t "player ~a has ~d moves~%"
@@ -444,7 +445,9 @@
                      (advance-to-next-player player)
                      (undo-move game player move)
                      nil))
-            (dotimes (i 10000)
+            (dotimes (i 100000)
               (advance-to-next-player start-leader))
-            (progress-info))
-          outcomes)))))
+            (map-into cumulative-outcomes #'+ cumulative-outcomes outcomes)
+            (push (win-ratios outcomes player-count) rows)
+            (progress-info)))))
+    rows))
