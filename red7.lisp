@@ -118,7 +118,8 @@
            do ,@body)))
 
 (defun card-set-score (card-set rule)
-  (declare (optimize speed))
+  (declare (optimize speed)
+           (card-set card-set))
   (labels ((score-for-mask (mask)
              (let ((matching-cards (logand card-set
                                            mask)))
@@ -381,7 +382,7 @@
           (loop for player = start-leader then (player-next-player player)
                 for id from 0 below player-count
                 do (setf (player-id player) id))
-          (format t "starting player: ~a~%" (player-id start-leader))
+          ;; (format t "starting player: ~a~%" (player-id start-leader))
           (labels ((advance-to-next-player (player)
                      (incf turns)
                      (dotimes (p (1- player-count))
@@ -430,6 +431,8 @@
                        ;; (format t "player ~a has ~d moves~%"
                        ;;         *leader* move-count)
                        (incf (aref lengths move-count))
+                       (incf actions)
+                       (incf (aref depth turns))
                        (if (not moves)
                            (eliminate-player player)
                            (if (<= move-count 1)
@@ -439,8 +442,6 @@
                                  (let ((move (nth (random move-count) moves)))
                                    (execute-selected-move player move)))))))
                    (execute-selected-move (player move)
-                     (incf actions)
-                     (incf (aref depth turns))
                      (execute-move game player move)
                      (advance-to-next-player player)
                      (undo-move game player move)
